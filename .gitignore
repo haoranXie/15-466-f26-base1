@@ -7,3 +7,8 @@ dist/SDL3.dll
 dist/game
 dist/game.exe
 maek-cache.json
+.vscode/
+dist/pack-assets
+dist/pack-assets.exe
+dist/pack-assets.ilk
+dist/pack-assets.pdb
