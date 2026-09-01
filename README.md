@@ -6,7 +6,7 @@ Design: CubeP is a puzzle platformer where you play as a stack of blocks and
 you platform by dropping blocks of yourself. 
 
 Screen Shot:
-![Screen Shot](image-1.png)
+![Screen Shot](screenshot.png)
 
 How Your Asset Pipeline Works:
 
