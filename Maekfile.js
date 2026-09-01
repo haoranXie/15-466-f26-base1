@@ -111,9 +111,11 @@ if (maek.OS === 'windows') {
 // cppFile: name of c++ file to compile
 // objFileBase (optional): base name object file to produce (if not supplied, set to options.objDir + '/' + cppFile without the extension)
 //returns objFile: objFileBase + a platform-dependant suffix ('.o' or '.obj')
+
 const game_objs = [
 	maek.CPP('PlayMode.cpp'),
 	maek.CPP('PPU466.cpp'),
+	maek.CPP('Assets.cpp'),
 	maek.CPP('main.cpp'),
 	maek.CPP('load_save_png.cpp'),
 	maek.CPP('Load.cpp'),
@@ -123,6 +125,18 @@ const game_objs = [
 	maek.CPP('GL.cpp')
 ];
 
+//pack-assets is a tool, not part of the game: it reads assets/ and writes
+//dist/assets.chunk. Run it in the terminal after editing art or levels. 
+//the second argument names the object file, since the game already compiles
+//these two and maek wants one task per object. the names must differ by more
+//than case or they collide on windows.
+const pack_assets_objs = [
+	maek.CPP('pack-assets.cpp'),
+	maek.CPP('Assets.cpp', 'objs/tool-Assets'),
+	maek.CPP('load_save_png.cpp', 'objs/tool-load_save_png')
+];
+const pack_assets_exe = maek.LINK(pack_assets_objs, 'dist/pack-assets');
+
 //the '[exeFile =] LINK(objFiles, exeFileBase, [, options])' links an array of objects into an executable:
 // objFiles: array of objects to link
 // exeFileBase: name of executable file to produce
@@ -130,7 +144,7 @@ const game_objs = [
 const game_exe = maek.LINK(game_objs, 'dist/game');
 
 //set the default target to the game (and copy the readme files):
-maek.TARGETS = [game_exe, ...copies];
+maek.TARGETS = [game_exe, pack_assets_exe, ...copies];
 
 //======================================================================
 //Now, onward to the code that makes all this work:

@@ -1,0 +1,14 @@
+#one name per 8x8 cell of tiles.png, in reading order (left to right, top to bottom).
+#blank lines and lines starting with '#' are ignored.
+
+#top row:
+empty
+wall
+wall_top
+dropped
+
+#bottom row:
+exit
+player_head
+player_body
+player_foot

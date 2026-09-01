@@ -1,115 +1,132 @@
 #include "PlayMode.hpp"
 
-//for the GL_ERRORS() macro:
-#include "gl_errors.hpp"
+#include "Load.hpp"
+#include "data_path.hpp"
 
-//for glm::value_ptr() :
-#include <glm/gtc/type_ptr.hpp>
+#include <cassert>
 
-#include <random>
+//load assets before any game code runs so a broken asset file fails at startup:
+static Load<Assets> assets(LoadTagDefault, []() -> Assets const * {
+	return new Assets(data_path("assets.chunk"));
+});
 
 PlayMode::PlayMode() {
-	//TODO:
-	// you *must* use an asset pipeline of some sort to generate tiles.
-	// don't hardcode them like this!
-	// or, at least, if you do hardcode them like this,
-	//  make yourself a script that spits out the code that you paste in here
-	//   and check that script into your repository.
+	assets->upload(&ppu);
 
-	//Also, *don't* use these tiles in your game:
+	empty_tile = assets->lookup("empty");
+	wall_tile = assets->lookup("wall");
+	wall_top_tile = assets->lookup("wall_top");
+	drop_tile = assets->lookup("dropped");
+	exit_tile = assets->lookup("exit");
+	head_tile = assets->lookup("player_head");
+	body_tile = assets->lookup("player_body");
+	foot_tile = assets->lookup("player_foot");
 
-	{ //use tiles 0-16 as some weird dot pattern thing:
-		std::array< uint8_t, 8*8 > distance;
-		for (uint32_t y = 0; y < 8; ++y) {
-			for (uint32_t x = 0; x < 8; ++x) {
-				float d = glm::length(glm::vec2((x + 0.5f) - 4.0f, (y + 0.5f) - 4.0f));
-				d /= glm::length(glm::vec2(4.0f, 4.0f));
-				distance[x+8*y] = uint8_t(std::max(0,std::min(255,int32_t( 255.0f * d ))));
-			}
-		}
-		for (uint32_t index = 0; index < 16; ++index) {
-			PPU466::Tile tile;
-			uint8_t t = uint8_t((255 * index) / 16);
-			for (uint32_t y = 0; y < 8; ++y) {
-				uint8_t bit0 = 0;
-				uint8_t bit1 = 0;
-				for (uint32_t x = 0; x < 8; ++x) {
-					uint8_t d = distance[x+8*y];
-					if (d > t) {
-						bit0 |= (1 << x);
-					} else {
-						bit1 |= (1 << x);
-					}
-				}
-				tile.bit0[y] = bit0;
-				tile.bit1[y] = bit1;
-			}
-			ppu.tile_table[index] = tile;
-		}
-	}
-
-	//use sprite 32 as a "player":
-	ppu.tile_table[32].bit0 = {
-		0b01111110,
-		0b11111111,
-		0b11111111,
-		0b11111111,
-		0b11111111,
-		0b11111111,
-		0b11111111,
-		0b01111110,
-	};
-	ppu.tile_table[32].bit1 = {
-		0b00000000,
-		0b00000000,
-		0b00011000,
-		0b00100100,
-		0b00000000,
-		0b00100100,
-		0b00000000,
-		0b00000000,
-	};
-
-	//makes the outside of tiles 0-16 solid:
-	ppu.palette_table[0] = {
-		glm::u8vec4(0x00, 0x00, 0x00, 0x00),
-		glm::u8vec4(0x00, 0x00, 0x00, 0xff),
-		glm::u8vec4(0x00, 0x00, 0x00, 0x00),
-		glm::u8vec4(0x00, 0x00, 0x00, 0xff),
-	};
-
-	//makes the center of tiles 0-16 solid:
-	ppu.palette_table[1] = {
-		glm::u8vec4(0x00, 0x00, 0x00, 0x00),
-		glm::u8vec4(0x00, 0x00, 0x00, 0x00),
-		glm::u8vec4(0x00, 0x00, 0x00, 0xff),
-		glm::u8vec4(0x00, 0x00, 0x00, 0xff),
-	};
-
-	//used for the player:
-	ppu.palette_table[7] = {
-		glm::u8vec4(0x00, 0x00, 0x00, 0x00),
-		glm::u8vec4(0xff, 0xff, 0x00, 0xff),
-		glm::u8vec4(0x00, 0x00, 0x00, 0xff),
-		glm::u8vec4(0x00, 0x00, 0x00, 0xff),
-	};
-
-	//used for the misc other sprites:
-	ppu.palette_table[6] = {
-		glm::u8vec4(0x00, 0x00, 0x00, 0x00),
-		glm::u8vec4(0x88, 0x88, 0xff, 0xff),
-		glm::u8vec4(0x00, 0x00, 0x00, 0xff),
-		glm::u8vec4(0x00, 0x00, 0x00, 0x00),
-	};
-
+	load_level(0);
 }
 
 PlayMode::~PlayMode() {
 }
 
-bool PlayMode::handle_event(SDL_Event const &evt, glm::uvec2 const &window_size) {
+void PlayMode::load_level(uint32_t index) {
+	assert(index<assets->stored_levels.size() && "all levels exist");
+	Assets::StoredLevel const &level = assets->stored_levels[index];
 
-	if (evt.type == SDL_EVENT_KEY_DOWN) {
+	level_index = index;
+	level_size = glm::ivec2(int32_t(level.width), int32_t(level.height));
+	cells.assign(assets->cells.begin() + level.cells_begin, assets->cells.begin() + level.cells_end);
+
+	//center the room on screen
+	level_origin = glm::ivec2(
+		(int32_t(PPU466::ScreenWidth / 8) - level_size.x) / 2,
+		(int32_t(PPU466::ScreenHeight / 8) - level_size.y) / 2
+	);
+
+	//the start marker is just a place to stand once the room is loaded:
+	bool found = false;
+	for (int32_t y = 0; y < level_size.y; ++y) {
+		for (int32_t x = 0; x < level_size.x; ++x) {
+			if (cells[x + level_size.x * y] == Assets::CellStart) {
+				cells[x + level_size.x * y] = Assets::CellEmpty;
+				feet = glm::ivec2(x, y);
+				found = true;
+			}
+		}
+	}
+	assert(found && "rejecs every level without a start mark");
+	(void)found;
+
+	height = StartHeight;
+	facing = 1;
+	settle();
+}
+
+bool PlayMode::solid(int32_t x, int32_t y) const {
+	if (x < 0 || y < 0 || x >= level_size.x || y >= level_size.y) return true;
+	uint8_t cell = cells[x + level_size.x * y];
+	return cell == Assets::CellWall || cell == Assets::CellDrop;
+}
+
+bool PlayMode::fits(int32_t x, int32_t y, int32_t h) const {
+	for (int32_t i = 0; i < h; ++i) {
+		if (solid(x, y + i)) return false;
+	}
+	return true;
+}
+
+void PlayMode::settle() {
+	//solid() is true below the floor, so this always stops:
+	while (!solid(feet.x, feet.y - 1)) {
+		feet.y -= 1;
+	}
+}
+
+void PlayMode::step(int32_t dx) {
+	int32_t const to = feet.x + dx;
+
+	if (fits(to, feet.y, height)) {
+		feet.x = to;
+		settle();
+		return;
+	}
+
+	//only step up tiles that are 1 tile height
+	if (solid(to, feet.y) && fits(to, feet.y + 1, height)) {
+		feet.x = to;
+		feet.y += 1;
+		return;
+	}
+}
+
+void PlayMode::place_block() {
+	if (height <= 1) return; //only the player block is left
+
+	int32_t const x = feet.x + facing;
+	int32_t const y = feet.y;
+	if (x < 0 || y < 0 || x >= level_size.x || y >= level_size.y) return;
+	if (cells[x + level_size.x * y] != Assets::CellEmpty) return;
+
+	cells[x + level_size.x * y] = Assets::CellDrop;
+
+	height -= 1;
+	settle();
+}
+
+bool PlayMode::on_exit() const {
+	for (int32_t i = 0; i < height; ++i) {
+		int32_t const y = feet.y + i;
+		if (y < 0 || y >= level_size.y) continue;
+		if (cells[feet.x + level_size.x * y] == Assets::CellExit) return true;
+	}
+	return false;
+}
+
+bool PlayMode::handle_event(SDL_Event const &evt, glm::uvec2 const &window_size) {
+	(void)window_size;
+
+	//repeats are ignored or else holding the down key could remove player.
+	//based on https://wiki.libsdl.org/SDL3/SDL_KeyboardEvent for repeat:
+	if (evt.type == SDL_EVENT_KEY_DOWN && !evt.key.repeat) {
 		if (evt.key.key == SDLK_LEFT) {
 			left.downs += 1;
 			left.pressed = true;
@@ -118,13 +135,13 @@ bool PlayMode::handle_event(SDL_Event const &evt, glm::uvec2 const &window_size)
 			right.downs += 1;
 			right.pressed = true;
 			return true;
-		} else if (evt.key.key == SDLK_UP) {
-			up.downs += 1;
-			up.pressed = true;
-			return true;
 		} else if (evt.key.key == SDLK_DOWN) {
-			down.downs += 1;
-			down.pressed = true;
+			place.downs += 1;
+			place.pressed = true;
+			return true;
+		} else if (evt.key.key == SDLK_R) {
+			restart.downs += 1;
+			restart.pressed = true;
 			return true;
 		}
 	} else if (evt.type == SDL_EVENT_KEY_UP) {
@@ -134,11 +151,11 @@ bool PlayMode::handle_event(SDL_Event const &evt, glm::uvec2 const &window_size)
 		} else if (evt.key.key == SDLK_RIGHT) {
 			right.pressed = false;
 			return true;
-		} else if (evt.key.key == SDLK_UP) {
-			up.pressed = false;
-			return true;
 		} else if (evt.key.key == SDLK_DOWN) {
-			down.pressed = false;
+			place.pressed = false;
+			return true;
+		} else if (evt.key.key == SDLK_R) {
+			restart.pressed = false;
 			return true;
 		}
 	}
@@ -147,65 +164,125 @@ bool PlayMode::handle_event(SDL_Event const &evt, glm::uvec2 const &window_size)
 }
 
 void PlayMode::update(float elapsed) {
+	//changed the movement to be discrete meaning I don't need elapsed
+	(void)elapsed;
 
-	//slowly rotates through [0,1):
-	// (will be used to set background color)
-	background_fade += elapsed / 10.0f;
-	background_fade -= std::floor(background_fade);
-
-	constexpr float PlayerSpeed = 30.0f;
-	if (left.pressed) player_at.x -= PlayerSpeed * elapsed;
-	if (right.pressed) player_at.x += PlayerSpeed * elapsed;
-	if (down.pressed) player_at.y -= PlayerSpeed * elapsed;
-	if (up.pressed) player_at.y += PlayerSpeed * elapsed;
-
-	//reset button press counters:
-	left.downs = 0;
-	right.downs = 0;
-	up.downs = 0;
-	down.downs = 0;
-}
-
-void PlayMode::draw(glm::uvec2 const &drawable_size) {
-	//--- set ppu state based on game state ---
-
-	//background color will be some hsv-like fade:
-	ppu.background_color = glm::u8vec4(
-		std::min(255,std::max(0,int32_t(255 * 0.5f * (0.5f + std::sin( 2.0f * M_PI * (background_fade + 0.0f / 3.0f) ) ) ))),
-		std::min(255,std::max(0,int32_t(255 * 0.5f * (0.5f + std::sin( 2.0f * M_PI * (background_fade + 1.0f / 3.0f) ) ) ))),
-		std::min(255,std::max(0,int32_t(255 * 0.5f * (0.5f + std::sin( 2.0f * M_PI * (background_fade + 2.0f / 3.0f) ) ) ))),
-		0xff
-	);
-
-	//tilemap gets recomputed every frame as some weird plasma thing:
-	//NOTE: don't do this in your game! actually make a map or something :-)
-	for (uint32_t y = 0; y < PPU466::BackgroundHeight; ++y) {
-		for (uint32_t x = 0; x < PPU466::BackgroundWidth; ++x) {
-			//TODO: make weird plasma thing
-			ppu.background[x+PPU466::BackgroundWidth*y] = ((x+y)%16);
+	//consume presses one at a time so a slow frame plays them all back
+	for (; restart.downs > 0; --restart.downs) {
+		if (finished) {
+			finished = false;
+			load_level(0);
+		} else {
+			load_level(level_index);
 		}
 	}
 
-	//background scroll:
-	ppu.background_position.x = int32_t(-0.5f * player_at.x);
-	ppu.background_position.y = int32_t(-0.5f * player_at.y);
-
-	//player sprite:
-	ppu.sprites[0].x = int8_t(player_at.x);
-	ppu.sprites[0].y = int8_t(player_at.y);
-	ppu.sprites[0].index = 32;
-	ppu.sprites[0].attributes = 7;
-
-	//some other misc sprites:
-	for (uint32_t i = 1; i < 63; ++i) {
-		float amt = (i + 2.0f * background_fade) / 62.0f;
-		ppu.sprites[i].x = int8_t(0.5f * float(PPU466::ScreenWidth) + std::cos( 2.0f * M_PI * amt * 5.0f + 0.01f * player_at.x) * 0.4f * float(PPU466::ScreenWidth));
-		ppu.sprites[i].y = int8_t(0.5f * float(PPU466::ScreenHeight) + std::sin( 2.0f * M_PI * amt * 3.0f + 0.01f * player_at.y) * 0.4f * float(PPU466::ScreenWidth));
-		ppu.sprites[i].index = 32;
-		ppu.sprites[i].attributes = 6;
-		if (i % 2) ppu.sprites[i].attributes |= 0x80; //'behind' bit
+	if (finished) {
+		//there is no room to move around in; drop anything else that arrived:
+		left.downs = 0;
+		right.downs = 0;
+		place.downs = 0;
+		return;
 	}
 
-	//--- actually draw ---
+	for (; left.downs > 0; --left.downs) {
+		facing = -1;
+		step(-1);
+	}
+	for (; right.downs > 0; --right.downs) {
+		facing = 1;
+		step(1);
+	}
+	for (; place.downs > 0; --place.downs) {
+		place_block();
+	}
+
+	if (on_exit()) {
+		if (level_index + 1 < uint32_t(assets->stored_levels.size())) {
+			load_level(level_index + 1);
+		} else {
+			finished = true;
+		}
+	}
+}
+
+void PlayMode::draw(glm::uvec2 const &drawable_size) {
+	ppu.background_color = glm::u8vec3(0x00, 0x00, 0x00);
+	ppu.background_position = glm::ivec2(0, 0);
+
+	//tile index in bits 0-7, palette in bits 8-10.
+	//layout from the background layer comment of PPU466.hpp:
+	auto put = [this](int32_t x, int32_t y, Assets::StoredTile const &tile) {
+		assert(x >= 0 && y >= 0);
+		assert(x < int32_t(PPU466::BackgroundWidth) && y < int32_t(PPU466::BackgroundHeight));
+		ppu.background[x + PPU466::BackgroundWidth * y] = uint16_t(tile.tile) | uint16_t(uint16_t(tile.palette) << 8);
+	};
+
+	for (uint32_t i = 0; i < ppu.background.size(); ++i) {
+		ppu.background[i] = uint16_t(empty_tile.tile) | uint16_t(uint16_t(empty_tile.palette) << 8);
+	}
+
+	if (finished) {
+		//every room cleared creates a floor of exits with the player on it.
+		int32_t const floor_y = 12;
+		for (int32_t x = 0; x < int32_t(PPU466::ScreenWidth / 8); ++x) {
+			put(x, floor_y, exit_tile);
+		}
+
+		uint32_t won_sprite = 0;
+		for (int32_t i = 0; i < StartHeight; ++i, ++won_sprite) {
+			Assets::StoredTile const *tile = &body_tile;
+			if (i == 0) {
+				tile = &foot_tile;
+			} else if (i == StartHeight - 1) {
+				tile = &head_tile;
+			}
+
+			ppu.sprites[won_sprite].x = uint8_t(16 * 8);
+			ppu.sprites[won_sprite].y = uint8_t((floor_y + 1 + i) * 8);
+			ppu.sprites[won_sprite].index = tile->tile;
+			ppu.sprites[won_sprite].attributes = tile->palette;
+		}
+		for (; won_sprite < ppu.sprites.size(); ++won_sprite) {
+			ppu.sprites[won_sprite].y = 240;
+		}
+
+		ppu.draw(drawable_size);
+		return;
+	}
+
+	for (int32_t y = 0; y < level_size.y; ++y) {
+		for (int32_t x = 0; x < level_size.x; ++x) {
+			uint8_t const cell = cells[x + level_size.x * y];
+			if (cell == Assets::CellWall) {
+				//walls get a different top for making it clear what you can walk on
+				put(level_origin.x + x, level_origin.y + y, solid(x, y + 1) ? wall_tile : wall_top_tile);
+			} else if (cell == Assets::CellDrop) {
+				put(level_origin.x + x, level_origin.y + y, drop_tile);
+			} else if (cell == Assets::CellExit) {
+				put(level_origin.x + x, level_origin.y + y, exit_tile);
+			}
+		}
+	}
+
+	//the player is the only thing drawn with sprites with one per block
+	uint32_t sprite = 0;
+	for (int32_t i = 0; i < height && sprite < ppu.sprites.size(); ++i, ++sprite) {
+		Assets::StoredTile const *tile = &body_tile;
+		if (height == 1 || i == height - 1) {
+			tile = &head_tile;
+		} else if (i == 0) {
+			tile = &foot_tile;
+		}
+
+		ppu.sprites[sprite].x = uint8_t((level_origin.x + feet.x) * 8);
+		ppu.sprites[sprite].y = uint8_t((level_origin.y + feet.y + i) * 8);
+		ppu.sprites[sprite].index = tile->tile;
+		ppu.sprites[sprite].attributes = tile->palette; //priority 0: in front of the background
+	}
+	for (; sprite < ppu.sprites.size(); ++sprite) {
+		ppu.sprites[sprite].y = 240;
+	}
+
 	ppu.draw(drawable_size);
 }
