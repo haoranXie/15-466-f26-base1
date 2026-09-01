@@ -40,7 +40,7 @@ a `Load<Assets>` runs it at startup so a broken file never reaches a level.
 dist/pack-assets whenever anything in `assets/` changes. I run it by hand and
 commit `dist/assets.chunk`, so building the game never depends on it.
 
-Files I drew: [assets/tiles.png](assets/tiles.png), with rooms in
+I drew: [assets/tiles.png](assets/tiles.png), with rooms in
 [assets/levels.txt](assets/levels.txt) and names in
 [assets/tiles.txt](assets/tiles.txt).
 
